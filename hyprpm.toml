@@ -1,0 +1,11 @@
+[repository]
+name = "hyprvibr"
+authors = ["devcexx"]
+
+[hyprvibr]
+description = "A plugin to customize monitor saturation per focused window"
+authors = ["devcexx"]
+output = "hyprvibr.so"
+build = [
+    "make",
+]
