@@ -1,14 +1,16 @@
-#include "src/Compositor.hpp"
-#include "src/SharedDefs.hpp"
-#include "src/debug/Log.hpp"
-#include "src/desktop/DesktopTypes.hpp"
-#include "src/helpers/Monitor.hpp"
-#include "src/plugins/PluginAPI.hpp"
-#include "src/protocols/core/Compositor.hpp"
+#include <hyprland/src/Compositor.hpp>
+#include <hyprland/src/SharedDefs.hpp>
+#include <hyprland/src/debug/log/Logger.hpp>
+#include <hyprland/src/desktop/DesktopTypes.hpp>
+#include <hyprland/src/helpers/Monitor.hpp>
+#include <hyprland/src/plugins/PluginAPI.hpp>
+#include <hyprland/src/protocols/core/Compositor.hpp>
+#include <hyprland/src/desktop/state/FocusState.hpp>
 #include <any>
 #include <array>
+#include <format>
 #include <hyprutils/string/ConstVarList.hpp>
-#include "src/desktop/Window.hpp"
+#include <hyprland/src/desktop/view/Window.hpp>
 
 #include "globals.hpp"
 
@@ -22,6 +24,9 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 struct SAppConfig {
     std::string szClass;
     float sat;
+    int resX = -1;
+    int resY = -1;
+    float refreshRate = -1.0f;
 };
 
 std::vector<SAppConfig>  g_appConfigs;
@@ -37,6 +42,9 @@ static const SAppConfig* getAppConfig(const std::string& appClass) {
 
 PHLMONITORREF g_activeMonitor;
 float g_activeMonitorSat;
+int g_activeResX = -1;
+int g_activeResY = -1;
+std::optional<SMonitorRule> g_originalMonitorRule;
 
 // Evily stoled from libvibrant
 const Mat3x3 calc_ctm_matrix(float sat) {
@@ -48,16 +56,22 @@ const Mat3x3 calc_ctm_matrix(float sat) {
     return mat;
 }
 
+static std::string buildMonitorCommand(const std::string& name, int resX, int resY, float refreshRate, const Vector2D& offset, float scale) {
+    return std::format("{},{}x{}@{},{}x{},{}", name, resX, resY, refreshRate, (int)offset.x, (int)offset.y, scale);
+}
+
 void onActiveWindowChange(const PHLWINDOW win) {
     if (win) {
-        Debug::log(TRACE, "[hyprvibr] Active window change: {} ({})", win->m_title, win->m_initialClass);
+        Log::logger->log(Log::TRACE, "[hyprvibr] Active window change: {} ({})", win->m_title, win->m_initialClass);
     } else {
-        Debug::log(TRACE, "[hyprvibr] No active window");
+        Log::logger->log(Log::TRACE, "[hyprvibr] No active window");
     }
     const auto CONFIG = win ? getAppConfig(win->m_initialClass) : nullptr;
     auto prevMon = g_activeMonitor.lock();
     PHLMONITOR newMon;
     float newSat;
+    int newResX = -1;
+    int newResY = -1;
 
     if (CONFIG == nullptr) {
         g_activeMonitor = {};
@@ -67,20 +81,57 @@ void onActiveWindowChange(const PHLWINDOW win) {
         g_activeMonitor = win->m_monitor;
         newMon = win->m_monitor.lock();
         newSat = CONFIG->sat;
+        newResX = CONFIG->resX;
+        newResY = CONFIG->resY;
     }
 
-    if (prevMon != newMon || newSat != g_activeMonitorSat) {
+    bool settingsChanged = prevMon != newMon || newSat != g_activeMonitorSat || newResX != g_activeResX || newResY != g_activeResY;
+
+    if (settingsChanged) {
         if (prevMon && prevMon != newMon) {
             prevMon->setCTM(Mat3x3::identity());
-            Debug::log(INFO, "[hyprvibr] Removed custom CTM from monitor {}", prevMon->m_name);
+
+            if (g_originalMonitorRule.has_value()) {
+                auto cmd = buildMonitorCommand(prevMon->m_name, (int)g_originalMonitorRule->resolution.x, (int)g_originalMonitorRule->resolution.y,
+                                                g_originalMonitorRule->refreshRate, g_originalMonitorRule->offset, g_originalMonitorRule->scale);
+                HyprlandAPI::invokeHyprctlCommand("keyword", "monitor " + cmd);
+                Log::logger->log(Log::INFO, "[hyprvibr] Restored monitor {}", prevMon->m_name);
+                g_originalMonitorRule.reset();
+            }
         }
 
         if (newMon) {
-            newMon->setCTM(calc_ctm_matrix(CONFIG->sat));
-            Debug::log(INFO, "[hyprvibr] Set custom CTM to monitor {}", newMon->m_name);
+            if (newSat != g_activeMonitorSat) {
+                newMon->setCTM(calc_ctm_matrix(CONFIG->sat));
+            }
+
+            if (CONFIG->resX > 0 && CONFIG->resY > 0) {
+                auto currentResX = (int)newMon->m_pixelSize.x;
+                auto currentResY = (int)newMon->m_pixelSize.y;
+
+                if (!g_originalMonitorRule.has_value()) {
+                    g_originalMonitorRule = newMon->m_activeMonitorRule;
+                }
+
+                if (currentResX != CONFIG->resX || currentResY != CONFIG->resY) {
+                    float refreshRate = CONFIG->refreshRate > 0 ? CONFIG->refreshRate : 60.0f;
+                    auto cmd = buildMonitorCommand(newMon->m_name, CONFIG->resX, CONFIG->resY, refreshRate,
+                                                    newMon->m_activeMonitorRule.offset, newMon->m_activeMonitorRule.scale);
+                    HyprlandAPI::invokeHyprctlCommand("keyword", "monitor " + cmd);
+                    Log::logger->log(Log::INFO, "[hyprvibr] Changed resolution to {}x{}@{} on {}", CONFIG->resX, CONFIG->resY, refreshRate, newMon->m_name);
+                }
+            } else if (g_activeResX > 0 && g_activeResY > 0 && g_originalMonitorRule.has_value()) {
+                auto cmd = buildMonitorCommand(newMon->m_name, (int)g_originalMonitorRule->resolution.x, (int)g_originalMonitorRule->resolution.y,
+                                                g_originalMonitorRule->refreshRate, g_originalMonitorRule->offset, g_originalMonitorRule->scale);
+                HyprlandAPI::invokeHyprctlCommand("keyword", "monitor " + cmd);
+                Log::logger->log(Log::INFO, "[hyprvibr] Restored monitor {}", newMon->m_name);
+                g_originalMonitorRule.reset();
+            }
         }
 
         g_activeMonitorSat = newSat;
+        g_activeResX = newResX;
+        g_activeResY = newResY;
     }
 }
 
@@ -106,7 +157,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     });
 
     static auto P3 = HyprlandAPI::registerCallbackDynamic(PHANDLE, "configReloaded", [&](void* self, SCallbackInfo& info, std::any data) {
-        onActiveWindowChange(g_pCompositor->m_lastWindow.lock());
+        onActiveWindowChange(Desktop::focusState()->window());
     });
 
     HyprlandAPI::addConfigKeyword(
@@ -117,8 +168,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
             Hyprlang::CParseResult result;
 
-            if (data.size() != 2) {
-                result.setError("hyprvibr-app requires 2 params");
+            if (data.size() < 2 || data.size() > 5) {
+                result.setError("hyprvibr-app requires 2-5 params: class,sat[,resX,resY[,refreshRate]]");
                 return result;
             }
 
@@ -126,6 +177,16 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
                 SAppConfig config;
                 config.szClass = data[0];
                 config.sat = std::stof(std::string{data[1]});
+
+                if (data.size() >= 4) {
+                    config.resX = std::stoi(std::string{data[2]});
+                    config.resY = std::stoi(std::string{data[3]});
+                }
+
+                if (data.size() >= 5) {
+                    config.refreshRate = std::stof(std::string{data[4]});
+                }
+
                 g_appConfigs.emplace_back(std::move(config));
             } catch (std::exception& e) {
                 result.setError("failed to parse line");
