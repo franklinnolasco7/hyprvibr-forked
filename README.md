@@ -1,46 +1,77 @@
 # hyprvibr
 
-No-effort Hyprland plugin for achieving the same "vibrant" color effect to X11
-libvibrant and Windows VibranceGUI utility. This tool will dynamically change the Color
-Transformation Matrix (CTM) and optionally the resolution of a monitor where a window
-that is tracked and focused by the plugin is displayed, and will restore the original
-settings when the window is no longer focused.
+Hyprland plugin for adjusting monitor color saturation per-window or globally. Forked to add persistent global saturation.
+
+## Features
+
+- Global saturation applied to all monitors at all times
+- Per-app saturation overrides
+- Optional resolution switching per-app
+- Automatic restoration of original settings
+
+## Installation
+```bash
+git clone https://github.com/franklinnolasco7/hyprvibr-forked
+cd hyprvibr-forked
+make all
+```
+
+Load the plugin in `hyprland.conf`:
+```bash
+plugin = /path/to/hyprvibr.so
+```
 
 ## Configuration
 
-```
-plugin {
-    hyprvibr {
-      hyprvibr-app = <app initial class>, <saturation value>
-      hyprvibr-app = <app initial class>, <saturation value>, <width>, <height>
-      hyprvibr-app = <app initial class>, <saturation value>, <width>, <height>, <refresh rate>
-      hyprvibr-app = ...
-    }
-}
+### Basic Example
+```bash
+plugin = $HOME/hyprvibr-forked/out/hyprvibr.so
+hyprvibr-saturation = 1.5  # global setting
+hyprvibr-app = firefox,1.5  # app specific
 ```
 
-### Examples
+### Syntax
+```bash
+# Global saturation (always active)
+hyprvibr-saturation = <value>
 
-```
-plugin {
-    hyprvibr {
-      # Just saturation
-      hyprvibr-app = cs2, 3.3
-
-      # Saturation + resolution
-      hyprvibr-app = cs2, 1.5, 1920, 1080
-
-      # Saturation + resolution + refresh rate
-      hyprvibr-app = cs2, 1.2, 2560, 1440, 144
-    }
-}
+# Per-app (overrides global when focused)
+hyprvibr-app = <class>,<saturation>
+hyprvibr-app = <class>,<saturation>,<width>,<height>
+hyprvibr-app = <class>,<saturation>,<width>,<height>,<refresh_rate>
 ```
 
-Use `hyprctl clients` to see the current opened windows in Hyprland and check the initial class of each window.
+### Full Example
+```bash
+plugin = /path/to/hyprvibr.so
+
+hyprvibr-saturation = 1.3
+
+hyprvibr-app = cs2,2.5,1920,1080,144
+hyprvibr-app = firefox,1.5
+hyprvibr-app = discord,1.2
+```
+
+Use `hyprctl clients` to find window class names.
+
+## Saturation Values
+
+- `1.0` = normal
+- `1.2-1.5` = subtle boost
+- `1.5-2.0` = noticeable enhancement
+- `2.0+` = high saturation
+
+## Changes from Original
+
+The original plugin only applied saturation when specific windows were focused. This fork adds `hyprvibr-saturation` for persistent global saturation, useful for displays with poor color calibration.
 
 ## Compatibility
 
-As I've spent almost no effort on this plugin, I haven't either figure out ways
-to make it compatible with other components that mess around with the monitors
-CTM, such as the hyprland_ctm_control_manager_v1 protocol. That means that this
-plugin will interfer with things like hyprsunset.
+May conflict with other tools that modify the Color Transformation Matrix (CTM):
+- hyprsunset
+- hyprland_ctm_control_manager_v1 protocol
+
+## Credits
+
+- Original: [devcexx](https://github.com/devcexx/hyprvibr)
+- Fork: Added global saturation support
