@@ -11,9 +11,13 @@ Hyprland plugin for adjusting monitor color saturation per-window or globally. F
 
 ## Installation
 ```bash
+# cd /tmp
 git clone https://github.com/franklinnolasco7/hyprvibr-forked
 cd hyprvibr-forked
 make all
+
+# mkdir -p ~/.config/hypr/plugins
+# find . -name "hyprvibr.so" -exec cp {} ~/.config/hypr/plugins/ \;
 ```
 
 Load the plugin in `hyprland.conf`:
