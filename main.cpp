@@ -247,13 +247,6 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle)
     const std::string HASH = __hyprland_api_get_hash();
     const std::string CLIENT_HASH = __hyprland_api_get_client_hash();
 
-    if (HASH != CLIENT_HASH)
-    {
-        HyprlandAPI::addNotification(PHANDLE,
-                                     "[hyprvibr] Hyprland API hash mismatch; attempting best-effort compatibility.",
-                                     CHyprColor{1.0, 0.6, 0.0, 1.0}, 6000);
-    }
-
     static auto P = HyprlandAPI::registerCallbackDynamic(PHANDLE, "activeWindow", [&](void *self, SCallbackInfo &info, std::any data)
                                                          {
         const auto WIN = windowFromCallbackPayload(data);
