@@ -7,6 +7,7 @@
 #include <hyprland/src/protocols/core/Compositor.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/config/values/types/FloatValue.hpp>
 #include <any>
 #include <array>
 #include <format>
@@ -34,7 +35,17 @@ struct SAppConfig
 };
 
 std::vector<SAppConfig> g_appConfigs;
-float g_globalSaturation = 0.0f; // 0 = disabled, >0 = apply globally
+
+SP<Config::Values::CFloatValue> g_pGlobalSaturation;
+
+// Returns the current global saturation from the typed config value.
+// Falls back to 0 (disabled) if the value hasn't been registered yet.
+static float getGlobalSaturation()
+{
+    if (g_pGlobalSaturation)
+        return g_pGlobalSaturation->value();
+    return 0.0f;
+}
 
 static const SAppConfig *getAppConfig(const std::string &appClass)
 {
@@ -51,7 +62,7 @@ PHLMONITORREF g_activeMonitor;
 float g_activeMonitorSat;
 int g_activeResX = -1;
 int g_activeResY = -1;
-std::optional<SMonitorRule> g_originalMonitorRule;
+std::optional<Config::CMonitorRule> g_originalMonitorRule;
 
 // Evily stoled from libvibrant
 const Mat3x3 calc_ctm_matrix(float sat)
@@ -67,18 +78,19 @@ const Mat3x3 calc_ctm_matrix(float sat)
 
 static std::string buildMonitorCommand(const std::string &name, int resX, int resY, float refreshRate, const Vector2D &offset, float scale)
 {
-    return std::format("{},{}x{}@{},{}x{},{}", name, resX, resY, refreshRate, (int)offset.x, (int)offset.y, scale);
+    return name + "," + std::to_string(resX) + "x" + std::to_string(resY) + "@" + std::to_string(refreshRate) + "," + std::to_string((int)offset.x) + "x" + std::to_string((int)offset.y) + "," + std::to_string(scale);
 }
 
 void applyGlobalSaturationToAllMonitors()
 {
-    if (g_globalSaturation <= 0)
+    const float globalSat = getGlobalSaturation();
+    if (globalSat <= 0)
         return;
 
     for (auto &mon : g_pCompositor->m_monitors)
     {
         if (mon)
-            mon->setCTM(calc_ctm_matrix(g_globalSaturation));
+            mon->setCTM(calc_ctm_matrix(globalSat));
     }
 }
 
@@ -134,6 +146,7 @@ static PHLWINDOW windowFromCallbackPayload(const std::any &payload)
 
 void onActiveWindowChange(const PHLWINDOW win)
 {
+    const float globalSat = getGlobalSaturation();
     const auto CONFIG = win ? getAppConfig(win->m_initialClass) : nullptr;
     auto prevMon = g_activeMonitor.lock();
     PHLMONITOR newMon;
@@ -143,14 +156,14 @@ void onActiveWindowChange(const PHLWINDOW win)
 
     if (!win)
     {
-        if (g_globalSaturation > 0)
+        if (globalSat > 0)
         {
             newMon = pickMonitorForNoWindow(prevMon);
             if (newMon)
                 g_activeMonitor = newMon;
             else
                 g_activeMonitor = {};
-            newSat = g_globalSaturation;
+            newSat = globalSat;
         }
         else
         {
@@ -161,11 +174,11 @@ void onActiveWindowChange(const PHLWINDOW win)
     }
     else if (CONFIG == nullptr)
     {
-        if (g_globalSaturation > 0)
+        if (globalSat > 0)
         {
             g_activeMonitor = win->m_monitor;
             newMon = win->m_monitor.lock();
-            newSat = g_globalSaturation;
+            newSat = globalSat;
         }
         else
         {
@@ -201,8 +214,8 @@ void onActiveWindowChange(const PHLWINDOW win)
 
             if (g_originalMonitorRule.has_value())
             {
-                auto cmd = buildMonitorCommand(prevMon->m_name, (int)g_originalMonitorRule->resolution.x, (int)g_originalMonitorRule->resolution.y,
-                                               g_originalMonitorRule->refreshRate, g_originalMonitorRule->offset, g_originalMonitorRule->scale);
+                auto cmd = buildMonitorCommand(prevMon->m_name, (int)g_originalMonitorRule->m_resolution.x, (int)g_originalMonitorRule->m_resolution.y,
+                                               g_originalMonitorRule->m_refreshRate, g_originalMonitorRule->m_offset, g_originalMonitorRule->m_scale);
                 HyprlandAPI::invokeHyprctlCommand("keyword", "monitor " + cmd);
                 g_originalMonitorRule.reset();
             }
@@ -222,14 +235,14 @@ void onActiveWindowChange(const PHLWINDOW win)
                 {
                     float refreshRate = CONFIG->refreshRate > 0 ? CONFIG->refreshRate : 60.0f;
                     auto cmd = buildMonitorCommand(newMon->m_name, CONFIG->resX, CONFIG->resY, refreshRate,
-                                                   newMon->m_activeMonitorRule.offset, newMon->m_activeMonitorRule.scale);
+                                                   newMon->m_activeMonitorRule.m_offset, newMon->m_activeMonitorRule.m_scale);
                     HyprlandAPI::invokeHyprctlCommand("keyword", "monitor " + cmd);
                 }
             }
             else if (g_activeResX > 0 && g_activeResY > 0 && g_originalMonitorRule.has_value())
             {
-                auto cmd = buildMonitorCommand(newMon->m_name, (int)g_originalMonitorRule->resolution.x, (int)g_originalMonitorRule->resolution.y,
-                                               g_originalMonitorRule->refreshRate, g_originalMonitorRule->offset, g_originalMonitorRule->scale);
+                auto cmd = buildMonitorCommand(newMon->m_name, (int)g_originalMonitorRule->m_resolution.x, (int)g_originalMonitorRule->m_resolution.y,
+                                               g_originalMonitorRule->m_refreshRate, g_originalMonitorRule->m_offset, g_originalMonitorRule->m_scale);
                 HyprlandAPI::invokeHyprctlCommand("keyword", "monitor " + cmd);
                 g_originalMonitorRule.reset();
             }
@@ -248,40 +261,17 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle)
     const std::string HASH = __hyprland_api_get_hash();
     const std::string CLIENT_HASH = __hyprland_api_get_client_hash();
 
-    // v0.54.0: registerCallbackDynamic is gone, use Event::bus() typed listeners.
-    // CHyprSignalListener MUST be kept alive — it auto-unregisters on destruction.
-    static auto P = Event::bus()->m_events.window.active.listen([](PHLWINDOW win, Desktop::eFocusReason reason) {
-        onActiveWindowChange(win);
-    });
+    // --- Typed config value (non-deprecated) for global saturation ---
+    g_pGlobalSaturation = Hyprutils::Memory::makeShared<Config::Values::CFloatValue>("plugin:hyprvibr:saturation", "Global saturation", 0.0f);
+    HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalSaturation);
 
-    static auto P2 = Event::bus()->m_events.config.preReload.listen([]() {
-        g_appConfigs.clear();
-        g_globalSaturation = 0.0f;
-    });
-
-    static auto P3 = Event::bus()->m_events.config.reloaded.listen([]() {
-        applyGlobalSaturationToAllMonitors();
-        onActiveWindowChange(Desktop::focusState()->window());
-    });
-
-    HyprlandAPI::addConfigKeyword(
-        PHANDLE, "hyprvibr-saturation",
-        [](const char *l, const char *r) -> Hyprlang::CParseResult
-        {
-            Hyprlang::CParseResult result;
-            try
-            {
-                g_globalSaturation = std::stof(r);
-            }
-            catch (std::exception &e)
-            {
-                result.setError("failed to parse saturation value");
-                return result;
-            }
-            return result;
-        },
-        Hyprlang::SHandlerOptions{});
-
+    // --- Per-app config keyword ---
+    // addConfigKeyword is the only API that supports repeated/list-style keys.
+    // The deprecation warning is suppressed here because no typed replacement
+    // exists for this use-case. Track https://github.com/hyprwm/Hyprland for
+    // a future addConfigKeyword successor and remove the pragma when available.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     HyprlandAPI::addConfigKeyword(
         PHANDLE, "hyprvibr-app",
         [](const char *l, const char *r) -> Hyprlang::CParseResult
@@ -323,6 +313,20 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle)
             return result;
         },
         Hyprlang::SHandlerOptions{});
+#pragma GCC diagnostic pop
+
+    // v0.54.0: registerCallbackDynamic is gone, use Event::bus() typed listeners.
+    // CHyprSignalListener MUST be kept alive — it auto-unregisters on destruction.
+    static auto P = Event::bus()->m_events.window.active.listen([](PHLWINDOW win, Desktop::eFocusReason reason)
+                                                                { onActiveWindowChange(win); });
+
+    static auto P2 = Event::bus()->m_events.config.preReload.listen([]()
+                                                                    { g_appConfigs.clear(); });
+
+    static auto P3 = Event::bus()->m_events.config.reloaded.listen([]()
+                                                                   {
+        applyGlobalSaturationToAllMonitors();
+        onActiveWindowChange(Desktop::focusState()->window()); });
 
     return {"hyprvibr", "A plugin to customize monitor saturation per focused window", "devcexx", "1.0"};
 }
